@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- 
+    Cloudini Point Cloud Topic Converter
+    
+    This launch file starts a node that converts point cloud topics
+    between compressed and uncompressed formats using the Cloudini library.
+    
+    Usage:
+      roslaunch cloudini_ros topic_converter.launch topic_input:=/your/topic
+  -->
+
+  <!-- Arguments -->
+  <arg name="topic_input" default="/points" 
+       doc="Input topic name (sensor_msgs/PointCloud2)"/>
+  <arg name="topic_output" default="" 
+       doc="Output topic name (leave empty for auto-generated name)"/>
+  <arg name="compressing" default="true" 
+       doc="true to compress, false to decompress"/>
+  <arg name="resolution" default="0.001" 
+       doc="Resolution for lossy compression in meters (default: 0.001 = 1mm)"/>
+
+  <!-- Topic converter node -->
+  <node pkg="cloudini_ros" 
+        type="cloudini_topic_converter" 
+        name="cloudini_topic_converter"
+        output="screen">
+    <param name="topic_input" value="$(arg topic_input)"/>
+    <param name="topic_output" value="$(arg topic_output)"/>
+    <param name="compressing" value="$(arg compressing)"/>
+    <param name="resolution" value="$(arg resolution)"/>
+  </node>
+
+</launch>

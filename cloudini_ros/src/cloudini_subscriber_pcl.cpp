@@ -19,37 +19,22 @@
 #include <cloudini_lib/cloudini.hpp>
 #include <cloudini_lib/pcl_conversion.hpp>
 #include <cloudini_lib/ros_msg_utils.hpp>
+#include <ros/serialization.h>
 
 namespace cloudini_ros {
 
 using namespace Cloudini;
 
 CloudiniSubscriberPCL::CloudiniSubscriberPCL(
-    rclcpp::Node::SharedPtr node, const std::string& topic_name, CallbackType callback, const rclcpp::QoS& qos_profile)
-    : user_callback_(callback), node_(node.get()) {
-  // Create generic subscription for efficient raw DDS message handling
-  const std::string compressed_topic_type = "point_cloud_interfaces/msg/CompressedPointCloud2";
+    ros::NodeHandle& nh, const std::string& topic_name, CallbackType callback, uint32_t queue_size)
+    : user_callback_(callback), topic_name_(topic_name) {
+  
+  // Create a generic subscription using ShapeShifter
+  subscription_ = nh.subscribe<topic_tools::ShapeShifter>(
+      topic_name, queue_size,
+      boost::bind(&CloudiniSubscriberPCL::messageCallback, this, _1));
 
-  std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> generic_callback =
-      std::bind(&CloudiniSubscriberPCL::messageCallback, this, std::placeholders::_1);
-
-  subscription_ = node->create_generic_subscription(topic_name, compressed_topic_type, qos_profile, generic_callback);
-
-  RCLCPP_INFO(node_->get_logger(), "CloudiniSubscriberPCL created for topic: %s", topic_name.c_str());
-}
-
-CloudiniSubscriberPCL::CloudiniSubscriberPCL(
-    rclcpp::Node* node, const std::string& topic_name, CallbackType callback, const rclcpp::QoS& qos_profile)
-    : user_callback_(callback), node_(node) {
-  // Create generic subscription for efficient raw DDS message handling
-  const std::string compressed_topic_type = "point_cloud_interfaces/msg/CompressedPointCloud2";
-
-  std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> generic_callback =
-      std::bind(&CloudiniSubscriberPCL::messageCallback, this, std::placeholders::_1);
-
-  subscription_ = node->create_generic_subscription(topic_name, compressed_topic_type, qos_profile, generic_callback);
-
-  RCLCPP_INFO(node_->get_logger(), "CloudiniSubscriberPCL created for topic: %s", topic_name.c_str());
+  ROS_INFO("CloudiniSubscriberPCL created for topic: %s", topic_name.c_str());
 }
 
 CloudiniSubscriberPCL::~CloudiniSubscriberPCL() {
@@ -62,7 +47,7 @@ CloudiniSubscriberPCL::~CloudiniSubscriberPCL() {
 }
 
 std::string CloudiniSubscriberPCL::getTopicName() const {
-  return subscription_->get_topic_name();
+  return topic_name_;
 }
 
 pcl::PCLPointCloud2::Ptr CloudiniSubscriberPCL::acquireCloudFromPool() {
@@ -93,15 +78,20 @@ pcl::PCLPointCloud2::Ptr CloudiniSubscriberPCL::acquireCloudFromPool() {
   });
 }
 
-void CloudiniSubscriberPCL::messageCallback(std::shared_ptr<rclcpp::SerializedMessage> msg) {
+void CloudiniSubscriberPCL::messageCallback(const topic_tools::ShapeShifter::ConstPtr& msg) {
   try {
-    // STEP 1: Convert the raw DDS message buffer to a ConstBufferView (zero-copy)
-    const auto& input_msg = msg->get_rcl_serialized_message();
-    const ConstBufferView raw_dds_msg(input_msg.buffer, input_msg.buffer_length);
+    // STEP 1: Get the serialized buffer from ShapeShifter (zero-copy access)
+    const uint32_t serial_size = ros::serialization::serializationLength(*msg);
+    std::vector<uint8_t> buffer(serial_size);
+    
+    ros::serialization::OStream stream(buffer.data(), serial_size);
+    ros::serialization::serialize(stream, *msg);
+    
+    const ConstBufferView raw_msg(buffer.data(), buffer.size());
 
-    // STEP 2: Parse the raw DDS message to extract compressed data
-    // This efficiently parses the CompressedPointCloud2 message without full deserialization
-    const auto pc_info = cloudini_ros::getDeserializedPointCloudMessage(raw_dds_msg);
+    // STEP 2: Parse the message to extract compressed data
+    // This efficiently parses the compressed message without full deserialization
+    const auto pc_info = cloudini_ros::getDeserializedPointCloudMessage(raw_msg);
 
     // STEP 3: Acquire a PCL cloud from the object pool (avoids allocation)
     auto pcl_cloud = acquireCloudFromPool();
@@ -114,7 +104,7 @@ void CloudiniSubscriberPCL::messageCallback(std::shared_ptr<rclcpp::SerializedMe
     user_callback_(pcl_cloud);
 
   } catch (const std::exception& e) {
-    RCLCPP_ERROR(node_->get_logger(), "Failed to decode Cloudini point cloud: %s", e.what());
+    ROS_ERROR("Failed to decode Cloudini point cloud: %s", e.what());
   }
 }
 

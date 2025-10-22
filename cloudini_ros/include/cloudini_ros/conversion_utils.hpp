@@ -18,14 +18,13 @@
 #define CLOUDINI_ROS__CONVERSION_UTILS_HPP_
 
 #include <cloudini_lib/cloudini.hpp>
-#include <point_cloud_interfaces/msg/compressed_point_cloud2.hpp>
-#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/PointCloud2.h>
 
 namespace Cloudini {
 
 /**
- * @bried Convert a PointCloud2 message to EncodingInfo
- * Default options (that can be overwitten later) are:
+ * @brief Convert a PointCloud2 message to EncodingInfo
+ * Default options (that can be overwritten later) are:
  * - encoding_opt = LOSSY
  * - compression_opt = ZSTD
  *
@@ -33,9 +32,7 @@ namespace Cloudini {
  * @param resolution The resolution to use for FLOAT32 fields (XYZ, XYZI).
  * @return The EncodingInfo structure
  */
-EncodingInfo ConvertToEncodingInfo(const sensor_msgs::msg::PointCloud2& msg, float resolution);
-
-EncodingInfo ReadEncodingInfo(const point_cloud_interfaces::msg::CompressedPointCloud2& msg);
+EncodingInfo ConvertToEncodingInfo(const sensor_msgs::PointCloud2& msg, float resolution);
 
 }  // namespace Cloudini
 #endif  // CLOUDINI_ROS__CONVERSION_UTILS_HPP_

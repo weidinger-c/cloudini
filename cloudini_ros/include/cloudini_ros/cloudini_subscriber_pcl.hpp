@@ -18,19 +18,20 @@
 #define CLOUDINI_ROS__CLOUDINI_SUBSCRIBER_PCL_HPP_
 
 #include <pcl/PCLPointCloud2.h>
+#include <ros/ros.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <topic_tools/shape_shifter.h>
 
 #include <deque>
 #include <functional>
 #include <memory>
-#include <rclcpp/generic_subscription.hpp>
-#include <rclcpp/rclcpp.hpp>
-#include <rclcpp/serialization.hpp>
+#include <mutex>
 #include <string>
 
 namespace cloudini_ros {
 
 /**
- * @brief ROS2 subscriber class that receives CompressedPointCloud2 messages
+ * @brief ROS1 subscriber class that receives compressed PointCloud2 messages
  *        and converts them directly to pcl::PCLPointCloud2 format.
  *
  * This class provides a convenient way to subscribe to Cloudini-compressed
@@ -44,40 +45,19 @@ class CloudiniSubscriberPCL {
   /**
    * @brief Constructor for CloudiniSubscriberPCL
    *
-   * @param node Shared pointer to the ROS2 node
-   * @param topic_name Name of the topic to subscribe to (CompressedPointCloud2)
+   * @param nh ROS NodeHandle
+   * @param topic_name Name of the topic to subscribe to (compressed PointCloud2)
    * @param callback User callback function that will be invoked with decompressed PCL cloud
-   * @param qos_profile QoS profile for the subscription (default: system default)
+   * @param queue_size Queue size for the subscription (default: 10)
    */
   CloudiniSubscriberPCL(
-      rclcpp::Node::SharedPtr node, const std::string& topic_name, CallbackType callback,
-      const rclcpp::QoS& qos_profile = rclcpp::QoS(10));
-
-  /**
-   * @brief Constructor overload using raw node pointer
-   *
-   * @param node Raw pointer to the ROS2 node
-   * @param topic_name Name of the topic to subscribe to (CompressedPointCloud2)
-   * @param callback User callback function that will be invoked with decompressed PCL cloud
-   * @param qos_profile QoS profile for the subscription (default: system default)
-   */
-  CloudiniSubscriberPCL(
-      rclcpp::Node* node, const std::string& topic_name, CallbackType callback,
-      const rclcpp::QoS& qos_profile = rclcpp::QoS(10));
+      ros::NodeHandle& nh, const std::string& topic_name, CallbackType callback,
+      uint32_t queue_size = 10);
 
   /**
    * @brief Destructor - cleans up object pool
    */
   ~CloudiniSubscriberPCL();
-
-  /**
-   * @brief Get the underlying ROS2 subscription object
-   *
-   * @return Shared pointer to the subscription
-   */
-  rclcpp::SubscriptionBase::SharedPtr getSubscription() const {
-    return subscription_;
-  }
 
   /**
    * @brief Get the topic name this subscriber is listening to
@@ -88,11 +68,11 @@ class CloudiniSubscriberPCL {
 
  private:
   /**
-   * @brief Internal callback that handles decompression from raw DDS message
+   * @brief Internal callback that handles decompression from serialized message
    *
-   * @param msg Received serialized message
+   * @param msg Received serialized message as ShapeShifter
    */
-  void messageCallback(std::shared_ptr<rclcpp::SerializedMessage> msg);
+  void messageCallback(const topic_tools::ShapeShifter::ConstPtr& msg);
 
   /**
    * @brief Acquire a PCL cloud object from the pool (or create new if pool is empty)
@@ -101,14 +81,14 @@ class CloudiniSubscriberPCL {
    */
   pcl::PCLPointCloud2::Ptr acquireCloudFromPool();
 
-  // ROS2 generic subscription (for efficient raw DDS message handling)
-  rclcpp::GenericSubscription::SharedPtr subscription_;
+  // ROS1 subscriber using ShapeShifter for generic message handling
+  ros::Subscriber subscription_;
 
   // User-provided callback
   CallbackType user_callback_;
 
-  // Node pointer for logging
-  rclcpp::Node* node_;
+  // Topic name
+  std::string topic_name_;
 
   // Object pool for PCL clouds (avoids repeated allocations)
   std::deque<pcl::PCLPointCloud2*> cloud_pool_;

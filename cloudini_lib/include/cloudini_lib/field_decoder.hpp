@@ -144,6 +144,8 @@ class FieldDecoderFloatN_Lossy : public FieldDecoder {
   struct FieldData {
     size_t offset;
     float resolution;
+    FieldData() = default;
+    FieldData(size_t off, float res) : offset(off), resolution(res) {}
   };
 
   FieldDecoderFloatN_Lossy(const std::vector<FieldData>& field_data);

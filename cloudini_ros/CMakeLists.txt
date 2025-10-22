@@ -1,28 +1,40 @@
 cmake_minimum_required(VERSION 3.16)
 project(cloudini_ros)
 
+# Ensure we compile with at least C++20 because cloudini_lib headers use C++17/20 features
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 # find dependencies
-find_package(ament_cmake REQUIRED)
-find_package(rclcpp REQUIRED)
-find_package(rosbag2_cpp REQUIRED)
-find_package(sensor_msgs REQUIRED)
+find_package(catkin REQUIRED COMPONENTS
+  roscpp
+  sensor_msgs
+  rosbag
+  rosbag_storage
+  pcl_conversions
+  pcl_ros
+  topic_tools
+  cloudini_lib
+)
 
-find_package(cloudini_lib REQUIRED)
-find_package(pluginlib REQUIRED)
-find_package(point_cloud_interfaces REQUIRED)
-find_package(point_cloud_transport REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common)
-find_package(pcl_conversions REQUIRED)
 find_package(Draco QUIET)
+find_package(rclcpp QUIET)
 
-set(PLUGIN_DEPS
-  pluginlib::pluginlib
-  rosbag2_cpp::rosbag2_cpp
-  point_cloud_transport::point_cloud_transport
-  rclcpp::rclcpp
-  cloudini_lib::cloudini_lib
-  ${sensor_msgs_TARGETS}
-  ${point_cloud_interfaces_TARGETS}
+catkin_package(
+  INCLUDE_DIRS include
+  LIBRARIES cloudini_ros
+  CATKIN_DEPENDS 
+    roscpp 
+    sensor_msgs 
+    rosbag 
+    rosbag_storage 
+    pcl_conversions 
+    pcl_ros
+    topic_tools
+    cloudini_lib
+  DEPENDS PCL
 )
 
 ######### library #########
@@ -32,166 +44,101 @@ add_library(cloudini_ros SHARED
   src/cloudini_subscriber_pcl.cpp
 )
 
+# Redundant but explicit: propagate standard to this target and executables even if linker transitivity fails via catkin
+target_compile_features(cloudini_ros PUBLIC cxx_std_20)
+
 target_include_directories(cloudini_ros
   PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
+    ${catkin_INCLUDE_DIRS}
     ${PCL_INCLUDE_DIRS}
+    include
 )
 
 target_link_libraries(cloudini_ros
-  PUBLIC
-    ${PLUGIN_DEPS}
-    ${PCL_LIBRARIES}
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
 )
 
 install(TARGETS cloudini_ros
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION lib/cloudini_ros
+  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 install(
-  DIRECTORY include/cloudini_ros/
-  DESTINATION include/cloudini_ros
+  DIRECTORY include/
+  DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
 
 ######### topic converter #########
 
 add_executable(cloudini_topic_converter
-  src/topic_converter.cpp
+  src/topic_converter_ros1.cpp
 )
+target_compile_features(cloudini_topic_converter PRIVATE cxx_std_20)
 
 target_include_directories(cloudini_topic_converter
   PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    ${catkin_INCLUDE_DIRS}
+    include
 )
 
 target_link_libraries(cloudini_topic_converter
   cloudini_ros
-  cloudini_lib::cloudini_lib
+  ${catkin_LIBRARIES}
 )
 
 install(TARGETS cloudini_topic_converter
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION lib/cloudini_ros
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
-######### rosbag benchmark #########
-add_executable(rosbag_benchmark
-  test/rosbag_benchmark.cpp
-  test/draco_helper.cpp
-)
+######### rosbag benchmark & test (ROS2 only) #########
+if(rclcpp_FOUND)
+  message(STATUS "rclcpp found: enabling rosbag_benchmark and test_cloudini_subscriber (ROS2 build)")
+  add_executable(rosbag_benchmark
+    test/rosbag_benchmark.cpp
+    test/draco_helper.cpp
+  )
+  target_compile_features(rosbag_benchmark PRIVATE cxx_std_20)
+  target_include_directories(rosbag_benchmark
+    PUBLIC
+      ${catkin_INCLUDE_DIRS}
+      include
+  )
+  target_link_libraries(rosbag_benchmark
+    cloudini_ros
+    ${catkin_LIBRARIES}
+  )
+  if(Draco_FOUND)
+    target_compile_definitions(rosbag_benchmark PRIVATE DRACO_FOUND)
+    target_link_libraries(rosbag_benchmark draco::draco)
+  endif()
+  install(TARGETS rosbag_benchmark
+    RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+  )
 
-target_link_libraries(rosbag_benchmark
-  cloudini_ros
-)
-
-if(Draco_FOUND)
-  target_compile_definitions(rosbag_benchmark PRIVATE DRACO_FOUND)
-  target_link_libraries(rosbag_benchmark draco::draco)
+  add_executable(test_cloudini_subscriber test/test_cloudini_subscriber.cpp)
+  target_compile_features(test_cloudini_subscriber PRIVATE cxx_std_20)
+  target_link_libraries(test_cloudini_subscriber
+    cloudini_ros
+    ${catkin_LIBRARIES}
+    ${PCL_LIBRARIES}
+  )
+  target_include_directories(test_cloudini_subscriber
+    PRIVATE
+      ${catkin_INCLUDE_DIRS}
+      ${PCL_INCLUDE_DIRS}
+      include
+  )
+  install(TARGETS test_cloudini_subscriber
+    RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+  )
+else()
+  message(STATUS "rclcpp NOT found: skipping rosbag_benchmark and test_cloudini_subscriber (ROS1 build)")
 endif()
 
-install(TARGETS rosbag_benchmark
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION lib/cloudini_ros
+######### launch files #########
+install(DIRECTORY launch/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
+  FILES_MATCHING PATTERN "*.launch"
 )
-
-######### test cloudini subscriber #########
-add_executable(test_cloudini_subscriber test/test_cloudini_subscriber.cpp)
-
-target_link_libraries(test_cloudini_subscriber
-  cloudini_ros
-  ${PCL_LIBRARIES}
-)
-
-target_include_directories(test_cloudini_subscriber
-  PRIVATE
-    ${PCL_INCLUDE_DIRS}
-)
-
-install(TARGETS test_cloudini_subscriber
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION lib/cloudini_ros
-)
-
-######### test cloudini plugin #########
-add_executable(test_plugin_subscriber test/test_plugin_subscriber.cpp)
-
-target_link_libraries(test_plugin_subscriber
-  cloudini_ros
-  ${PCL_LIBRARIES}
-  ${point_cloud_interfaces_TARGETS}
-  ${pcl_conversions_TARGETS}
-  point_cloud_transport::point_cloud_transport
-)
-
-target_include_directories(test_plugin_subscriber
-  PRIVATE
-    ${PCL_INCLUDE_DIRS}
-    ${pcl_conversions_INCLUDE_DIRS}
-)
-
-install(TARGETS test_plugin_subscriber
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION lib/cloudini_ros
-)
-
-######### test plugin publisher #########
-add_executable(test_plugin_publisher test/test_plugin_publisher.cpp)
-
-target_link_libraries(test_plugin_publisher
-  cloudini_ros
-  ${sensor_msgs_TARGETS}
-  point_cloud_transport::point_cloud_transport
-  rclcpp::rclcpp
-)
-
-install(TARGETS test_plugin_publisher
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION lib/cloudini_ros
-)
-
-######### plugins #########
-set(PLUGIN_NAME cloudini_point_cloud_transport)
-
-add_library(${PLUGIN_NAME}
-  SHARED
-  src/conversion_utils.cpp
-  src/cloudini_publisher_plugin.cpp
-  src/cloudini_subscriber_plugin.cpp
-  src/plugin_manifest.cpp
-)
-
-target_link_libraries(${PLUGIN_NAME} PRIVATE
-  ${PLUGIN_DEPS}
-)
-
-target_include_directories(${PLUGIN_NAME} PRIVATE
-  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-  "$<INSTALL_INTERFACE:include/${PLUGIN_NAME}>"
-)
-
-install(TARGETS ${PLUGIN_NAME}
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION lib/${PLUGIN_NAME}
-)
-
-install(
-  DIRECTORY include/cloudini_plugin
-  DESTINATION include/${PLUGIN_NAME}
-)
-
-
-pluginlib_export_plugin_description_file(point_cloud_transport cloudini_plugins.xml)
-
-ament_export_include_directories(include)
-ament_export_libraries(cloudini_ros ${PLUGIN_NAME})
-ament_export_dependencies(${PLUGIN_DEPS})
-ament_package()

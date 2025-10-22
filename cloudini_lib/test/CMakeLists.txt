@@ -18,6 +18,21 @@ if(ament_cmake_FOUND)
       data_path
       ${ament_LIBRARIES})
 
+elseif(catkin_FOUND)
+
+    # Use catkin's gtest for ROS1
+    if(CATKIN_ENABLE_TESTING)
+      catkin_add_gtest(test_cloudini ${SRC_FILES})
+      target_link_libraries(test_cloudini
+        data_path
+        cloudini_lib
+        ${catkin_LIBRARIES})
+      
+      if(PCL_FOUND)
+        target_link_libraries(test_cloudini ${PCL_LIBRARIES})
+      endif()
+    endif()
+
 else()
 
     find_package(GTest REQUIRED)
@@ -28,6 +43,7 @@ else()
 
     target_link_libraries(test_cloudini
       data_path
+      cloudini_lib
       GTest::gtest
       GTest::gtest_main)
 
@@ -36,5 +52,3 @@ else()
     endif()
 
 endif()
-
-target_link_libraries(test_cloudini cloudini_lib)

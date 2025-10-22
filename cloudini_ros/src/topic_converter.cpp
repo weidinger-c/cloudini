@@ -15,12 +15,13 @@
  */
 
 #include <cloudini_lib/cloudini.hpp>
+#include <cloudini_lib/pcl_conversion.hpp>
 #include <cloudini_lib/ros_msg_utils.hpp>
-#include <rclcpp/generic_publisher.hpp>
-#include <rclcpp/generic_subscription.hpp>
-#include <rclcpp/rclcpp.hpp>
-#include <rosidl_typesupport_cpp/message_type_support.hpp>
-#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <cloudini_ros/conversion_utils.hpp>
+#include <ros/ros.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/PCLPointCloud2.h>
 
 /*
  * This node converts compressed point cloud messages from the

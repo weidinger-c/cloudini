@@ -22,9 +22,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # add cmake folder to path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-find_package(ament_cmake QUIET)
-if(ament_cmake_FOUND)
-  message(STATUS "Found ament_cmake")
+find_package(catkin QUIET COMPONENTS pcl_ros)
+if(catkin_FOUND)
+  message(STATUS "Found catkin")
   set(CLOUDINI_FORCE_VENDORED_DEPS ON FORCE)
 endif()
 
@@ -50,10 +50,16 @@ target_include_directories(data_path INTERFACE ${CMAKE_BINARY_DIR}/include)
 
 ##################################################################################
 
-if(ament_cmake_FOUND)
-  message(STATUS "PCL found using ament_cmake")
-  find_package(pcl_ros REQUIRED)
+if(catkin_FOUND)
+  message(STATUS "Using catkin build system")
+  catkin_package(
+    INCLUDE_DIRS include
+    LIBRARIES cloudini_lib
+    CATKIN_DEPENDS pcl_ros
+  )
   set(PCL_SRC src/pcl_conversion.cpp)
+  set(PCL_INCLUDE_DIRS ${catkin_INCLUDE_DIRS})
+  set(PCL_LIBRARIES ${catkin_LIBRARIES})
 
 else()
   find_package(PCL QUIET)
@@ -88,7 +94,7 @@ SET(CLOUDINI_SRC
   src/ros_msg_utils.cpp
 )
 
-if(ament_cmake_FOUND)
+if(catkin_FOUND)
   add_library(cloudini_lib SHARED
     ${CLOUDINI_SRC}
     ${PCL_SRC}
@@ -103,7 +109,7 @@ endif()
 target_compile_features(cloudini_lib PUBLIC cxx_std_20)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  target_compile_options(cloudini_lib PRIVATE -Wall -Wextra)
+  target_compile_options(cloudini_lib PRIVATE -Wall -Wextra -fpermissive -Wno-error)
 endif()
 
 target_include_directories(cloudini_lib
@@ -200,10 +206,4 @@ INSTALL( DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
     DESTINATION include
     FILES_MATCHING PATTERN "*.h*")
 
-if(ament_cmake_FOUND)
-  ament_export_include_directories(include)
-  ament_export_dependencies(pcl_ros)
-  ament_export_libraries(cloudini_lib)
-  ament_export_targets(cloudini_libTargets)
-  ament_package()
-endif()
+# Note: catkin_package() is called earlier in the file for catkin builds
