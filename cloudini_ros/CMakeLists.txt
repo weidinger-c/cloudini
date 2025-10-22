@@ -73,7 +73,7 @@ install(
 ######### topic converter #########
 
 add_executable(cloudini_topic_converter
-  src/topic_converter_ros1.cpp
+  src/topic_converter.cpp
 )
 target_compile_features(cloudini_topic_converter PRIVATE cxx_std_20)
 

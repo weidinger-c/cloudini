@@ -18,186 +18,186 @@
 #include <cloudini_lib/pcl_conversion.hpp>
 #include <cloudini_lib/ros_msg_utils.hpp>
 #include <cloudini_ros/conversion_utils.hpp>
-#include <ros/ros.h>
-#include <sensor_msgs/PointCloud2.h>
-#include <pcl_conversions/pcl_conversions.h>
 #include <pcl/PCLPointCloud2.h>
+#include <pcl_conversions/pcl_conversions.h>
+#include <ros/ros.h>
+#include <ros/serialization.h>
+#include <sensor_msgs/PointCloud2.h>
 
-/*
- * This node converts compressed point cloud messages from the
- * `point_cloud_interfaces/msg/CompressedPointCloud2` format to the
- * `sensor_msgs/msg/PointCloud2` format.
- *
- * It is BRUTALLY efficient, because we reade directly the RAW DDS message,
- * and write the output message without any intermediate copies.
- *
- * This means less CPU and less latency.
+/**
+ * @brief Simple ROS1 node that converts PointCloud2 messages
+ *        to/from compressed format using Cloudini compression
  */
-class CloudiniPointcloudConverter : public rclcpp::Node {
+class CloudiniPointCloudConverter {
  public:
-  CloudiniPointcloudConverter(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
+  CloudiniPointCloudConverter(ros::NodeHandle& nh, ros::NodeHandle& pnh)
+      : nh_(nh), pnh_(pnh) {
+    // Read parameters
+    pnh_.param<bool>("compressing", compressing_, true);
+    pnh_.param<std::string>("topic_input", topic_input_, "/points");
+    pnh_.param<std::string>("topic_output", topic_output_, "");
+    pnh_.param<double>("resolution", resolution_, 0.001);
 
-  void callback(std::shared_ptr<rclcpp::SerializedMessage> msg);
+    if (topic_input_.empty()) {
+      ROS_ERROR("Input topic is not set");
+      throw std::runtime_error("Input topic is not set");
+    }
 
-  ~CloudiniPointcloudConverter() {
-    // bypass the deleter
-    output_message_.get_rcl_serialized_message().buffer = nullptr;
-    output_message_.get_rcl_serialized_message().buffer_length = 0;
+    if (topic_output_.empty()) {
+      topic_output_ = topic_input_ + (compressing_ ? "/compressed" : "/decompressed");
+      ROS_WARN("Output topic is not set, using default: %s", topic_output_.c_str());
+    }
+
+    // Create publisher
+    pub_ = nh_.advertise<sensor_msgs::PointCloud2>(topic_output_, 10);
+
+    // Create subscriber
+    sub_ = nh_.subscribe(topic_input_, 10, &CloudiniPointCloudConverter::pointCloudCallback, this);
+
+    ROS_INFO("CloudiniPointCloudConverter initialized");
+    ROS_INFO("  Compressing: %s", compressing_ ? "true" : "false");
+    ROS_INFO("  Input topic: %s", topic_input_.c_str());
+    ROS_INFO("  Output topic: %s", topic_output_.c_str());
+    ROS_INFO("  Resolution: %.6f", resolution_);
   }
 
  private:
-  // generic subscriber for compressed point cloud messages
-  rclcpp::GenericSubscription::SharedPtr point_cloud_subscriber_;
+  void pointCloudCallback(const sensor_msgs::PointCloud2::ConstPtr& msg) {
+    if (pub_.getNumSubscribers() == 0) {
+      return;
+    }
 
-  // generic publisher for sensor_msgs/msg/PointCloud2 (but... raw DDS message)
-  rclcpp::GenericPublisher::SharedPtr point_cloud_publisher_;
+    // STEP 1: Convert ROS1 PointCloud2 to Cloudini's internal format
+    Cloudini::EncodingInfo encoding_info;
+    encoding_info.width = msg->width;
+    encoding_info.height = msg->height;
+    encoding_info.point_step = msg->point_step;
+    encoding_info.encoding_opt = Cloudini::EncodingOptions::LOSSY;
+    encoding_info.compression_opt = Cloudini::CompressionOption::ZSTD;
+    
+    // Convert field information
+    for (const auto& ros_field : msg->fields) {
+      Cloudini::PointField field;
+      field.name = ros_field.name;
+      field.offset = ros_field.offset;
+      field.type = static_cast<Cloudini::FieldType>(ros_field.datatype);
+      // Apply resolution for FLOAT32 fields (XYZ coordinates)
+      if (field.type == Cloudini::FieldType::FLOAT32) {
+        field.resolution = resolution_;
+      }
+      encoding_info.fields.push_back(field);
+    }
+    
+    // Create buffer view of the point cloud data
+    Cloudini::ConstBufferView input_data(msg->data.data(), msg->data.size());
+    
+    if (compressing_) {
+      // STEP 2: Compress the point cloud data using Cloudini encoder
+      Cloudini::PointcloudEncoder encoder(encoding_info);
+      output_raw_message_.clear();
+      encoder.encode(input_data, output_raw_message_);
+      
+      // STEP 3: Create output message with compressed data
+      output_message_.header = msg->header;
+      output_message_.height = 1;  // Compressed data is unorganized
+      output_message_.width = output_raw_message_.size();
+      output_message_.point_step = 1;
+      output_message_.row_step = output_raw_message_.size();
+      output_message_.is_bigendian = false;
+      output_message_.is_dense = true;
+      
+      // Create a single field to hold compressed data
+      output_message_.fields.clear();
+      sensor_msgs::PointField compressed_field;
+      compressed_field.name = "compressed_data";
+      compressed_field.offset = 0;
+      compressed_field.datatype = sensor_msgs::PointField::UINT8;
+      compressed_field.count = 1;
+      output_message_.fields.push_back(compressed_field);
+      
+      // Copy compressed data
+      output_message_.data = output_raw_message_;
+      
+    } else {
+      // STEP 2: Decompress the point cloud data
+      // First, we need to decode the header from the compressed data to get encoding info
+      Cloudini::ConstBufferView compressed_view(msg->data.data(), msg->data.size());
+      Cloudini::EncodingInfo decoded_info = Cloudini::DecodeHeader(compressed_view);
+      
+      // Now decompress using the decoder
+      Cloudini::PointcloudDecoder decoder;
+      output_raw_message_.clear();
+      decoder.decode(decoded_info, compressed_view, output_raw_message_);
+      
+      // STEP 3: Reconstruct the original PointCloud2 message
+      output_message_.header = msg->header;
+      output_message_.height = decoded_info.height;
+      output_message_.width = decoded_info.width;
+      output_message_.point_step = decoded_info.point_step;
+      output_message_.row_step = decoded_info.point_step * decoded_info.width;
+      output_message_.is_bigendian = false;
+      output_message_.is_dense = true;
+      
+      // Reconstruct field information
+      output_message_.fields.clear();
+      for (const auto& cloudini_field : decoded_info.fields) {
+        sensor_msgs::PointField ros_field;
+        ros_field.name = cloudini_field.name;
+        ros_field.offset = cloudini_field.offset;
+        ros_field.datatype = static_cast<uint8_t>(cloudini_field.type);
+        ros_field.count = 1;
+        output_message_.fields.push_back(ros_field);
+      }
+      
+      // Copy decompressed data
+      output_message_.data = output_raw_message_;
+    }
+    
+    pub_.publish(output_message_);
 
-  // callback for point cloud messages
-  void point_cloud_callback(const rclcpp::SerializedMessage& serialized_msg);
+    // Update statistics
+    tot_original_size += msg->data.size();
+    tot_compressed_size += output_raw_message_.size();
 
+    static int count = 0;
+    if (count % 20 == 0) {
+      double average_ratio = static_cast<double>(tot_compressed_size) / tot_original_size;
+      tot_compressed_size = 0;
+      tot_original_size = 0;
+      ROS_INFO("Converted %d messages, average compression ratio: %.2f", count, average_ratio);
+    }
+    count++;
+  }
+
+  ros::NodeHandle nh_;
+  ros::NodeHandle pnh_;
+  ros::Subscriber sub_;
+  ros::Publisher pub_;
+
+  bool compressing_;
+  std::string topic_input_;
+  std::string topic_output_;
+  double resolution_;
+  
+  // Variables for message handling and statistics
   std::vector<uint8_t> output_raw_message_;
-  rclcpp::SerializedMessage output_message_;
-  bool compressing_ = true;
-  double resolution_ = 0.001;  // 1mm
-
-  uint64_t tot_original_size = 0;
-  uint64_t tot_compressed_size = 0;
+  sensor_msgs::PointCloud2 output_message_;
+  size_t tot_original_size = 0;
+  size_t tot_compressed_size = 0;
 };
-//-----------------------------------------------------
-
-rclcpp::QoS adapt_request_to_offers(
-    const std::string& topic_name, const std::vector<rclcpp::TopicEndpointInfo>& endpoints) {
-  rclcpp::QoS request_qos(rmw_qos_profile_default.depth);
-
-  if (endpoints.empty()) {
-    return request_qos;
-  }
-  size_t reliability_reliable_endpoints_count = 0;
-  size_t durability_transient_local_endpoints_count = 0;
-  for (const auto& endpoint : endpoints) {
-    const auto& profile = endpoint.qos_profile().get_rmw_qos_profile();
-    if (profile.reliability == RMW_QOS_POLICY_RELIABILITY_RELIABLE) {
-      reliability_reliable_endpoints_count++;
-    }
-    if (profile.durability == RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL) {
-      durability_transient_local_endpoints_count++;
-    }
-  }
-  // Policy: reliability
-  if (reliability_reliable_endpoints_count == endpoints.size()) {
-    request_qos.reliable();
-  } else {
-    request_qos.best_effort();
-  }
-  // Policy: durability
-  // If all publishers offer transient_local, we can request it and receive latched messages
-  if (durability_transient_local_endpoints_count == endpoints.size()) {
-    request_qos.transient_local();
-  } else {
-    request_qos.durability_volatile();
-  }
-  return request_qos;
-}
-//-----------------------------------------------------
-
-CloudiniPointcloudConverter::CloudiniPointcloudConverter(const rclcpp::NodeOptions& options)
-    : rclcpp::Node("cloudini_pointcloud_converter", options) {
-  // Declare parameters for input and output topics
-  this->declare_parameter<bool>("compressing", true);
-  this->declare_parameter<std::string>("topic_input", "/points");
-  this->declare_parameter<std::string>("topic_output", "");
-  this->declare_parameter<double>("resolution", 0.001);
-
-  // read parameters
-  compressing_ = this->get_parameter("compressing").as_bool();
-  resolution_ = this->get_parameter("resolution").as_double();
-
-  const std::string input_topic = this->get_parameter("topic_input").as_string();
-  if (input_topic.empty()) {
-    RCLCPP_ERROR(this->get_logger(), "Input topic is not set");
-    throw std::runtime_error("Input topic is not set");
-  }
-  std::string output_topic = this->get_parameter("topic_output").as_string();
-  if (output_topic.empty()) {
-    output_topic = input_topic + (compressing_ ? "/compressed" : "/decompressed");
-    RCLCPP_WARN(this->get_logger(), "Output topic is not set, using default: %s", output_topic.c_str());
-  }
-
-  // Initialize point cloud type support
-  auto publisher_info = this->get_publishers_info_by_topic(input_topic);
-  auto detected_qos = adapt_request_to_offers(input_topic, publisher_info);
-
-  std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback =
-      std::bind(&CloudiniPointcloudConverter::callback, this, std::placeholders::_1);
-
-  const std::string compressed_topic_type = "point_cloud_interfaces/msg/CompressedPointCloud2";
-  const std::string pointcloud_topic_type = "sensor_msgs/msg/PointCloud2";
-
-  const std::string input_topic_type = compressing_ ? pointcloud_topic_type : compressed_topic_type;
-  const std::string output_topic_type = compressing_ ? compressed_topic_type : pointcloud_topic_type;
-
-  RCLCPP_INFO(
-      this->get_logger(), "Subscribing to topic '%s' of type '%s'", input_topic.c_str(), input_topic_type.c_str());
-
-  // Create a generic subscriber for point cloud messages
-  point_cloud_subscriber_ = this->create_generic_subscription(
-      input_topic,       //
-      input_topic_type,  //
-      detected_qos,      //
-      callback);
-
-  RCLCPP_INFO(
-      this->get_logger(), "Publishing to topic '%s' of type '%s'", output_topic.c_str(), output_topic_type.c_str());
-  // Create a generic publisher for point cloud messages
-  point_cloud_publisher_ = this->create_generic_publisher(output_topic, output_topic_type, detected_qos);
-}
-
-void CloudiniPointcloudConverter::callback(std::shared_ptr<rclcpp::SerializedMessage> msg) {
-  // Skip processing if there are no subscribers
-  if (point_cloud_publisher_->get_subscription_count() == 0) {
-    return;
-  }
-
-  // STEP 1: convert the buffer to a ConstBufferView (this is not a copy)
-  const auto& input_msg = msg->get_rcl_serialized_message();
-  const Cloudini::ConstBufferView raw_dds_msg(input_msg.buffer, input_msg.buffer_length);
-
-  // STEP 2: extract information from the raw DDS message
-  auto pc_info = cloudini_ros::getDeserializedPointCloudMessage(raw_dds_msg);
-
-  if (compressing_) {
-    const auto encoding_info = cloudini_ros::toEncodingInfo(pc_info);
-    cloudini_ros::applyResolutionProfile(cloudini_ros::ResolutionProfile{}, pc_info.fields, resolution_);
-    cloudini_ros::convertPointCloud2ToCompressedCloud(pc_info, encoding_info, output_raw_message_);
-  } else {
-    cloudini_ros::convertCompressedCloudToPointCloud2(pc_info, output_raw_message_);
-  }
-
-  // STEP 3: publish the output message
-  output_message_.get_rcl_serialized_message().buffer_length = output_raw_message_.size();
-  output_message_.get_rcl_serialized_message().buffer = output_raw_message_.data();
-  point_cloud_publisher_->publish(output_message_);
-
-  tot_original_size += input_msg.buffer_length;
-  tot_compressed_size += output_raw_message_.size();
-
-  static int count = 0;
-  if (count % 20 == 0) {
-    double average_ratio = static_cast<double>(tot_compressed_size) / tot_original_size;
-    tot_compressed_size = 0;
-    tot_original_size = 0;
-    RCLCPP_INFO(this->get_logger(), "Converted %d messages, average compression ratio: %.2f", count, average_ratio);
-  }
-  count++;
-}
 
 int main(int argc, char** argv) {
-  // Initialize ROS2 node
-  rclcpp::init(argc, argv);
-  rclcpp::NodeOptions options;
-  options.use_intra_process_comms(true);
-  auto node = std::make_shared<CloudiniPointcloudConverter>(options);
-  rclcpp::spin(node);
-  rclcpp::shutdown();
+  ros::init(argc, argv, "cloudini_topic_converter");
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("~");
+
+  try {
+    CloudiniPointCloudConverter converter(nh, pnh);
+    ros::spin();
+  } catch (const std::exception& e) {
+    ROS_ERROR("Exception in cloudini_topic_converter: %s", e.what());
+    return 1;
+  }
+
   return 0;
 }
